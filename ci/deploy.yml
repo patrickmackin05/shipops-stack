@@ -1,0 +1,138 @@
+# ShipOps standard deploy pipeline.
+# Install to the client repo as .github/workflows/deploy.yml
+#
+# Flow: lint -> build multi-stage image -> push to GHCR -> SSH to the VPS ->
+# blue/green deploy with automatic rollback -> verify the public URL.
+#
+# Required repository secrets:
+#   SSH_PRIVATE_KEY  private half of the key installed by provision.sh
+#   SSH_HOST         server IP or hostname
+#   SSH_USER         usually `shipops`
+#   APP_URL          https://app.clientdomain.com  (for the post-deploy check)
+# Optional:
+#   SSH_PORT         defaults to 22
+#
+# GHCR needs no extra token: GITHUB_TOKEN with packages:write is enough.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Never let two deploys interleave on one server. `cancel-in-progress: false`
+  # matters: cancelling a deploy mid-cutover is how you end up with no
+  # container running at all.
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Test
+        run: npm test --if-present
+
+      - name: Compute image tag
+        id: meta
+        run: |
+          # Immutable, traceable tag. Never `latest` - rollback needs to be able
+          # to name an exact previous build.
+          TAG="sha-${GITHUB_SHA::7}"
+          IMAGE="${REGISTRY}/${IMAGE_NAME,,}:${TAG}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE}"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          # GitHub Actions layer cache: turns a 4 minute rebuild into ~40s.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Pin the host key on first use rather than disabling host checking.
+          # StrictHostKeyChecking=no would let a hijacked DNS record collect
+          # your deploy key.
+          ssh-keyscan -p "${{ secrets.SSH_PORT || 22 }}" -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy
+        run: |
+          ssh -p "${{ secrets.SSH_PORT || 22 }}" \
+              -o ConnectTimeout=15 \
+              "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+              "/opt/shipops/scripts/deploy.sh '${{ needs.build.outputs.image }}'"
+
+      - name: Verify public endpoint
+        run: |
+          # The server-side script already health-checked the container. This
+          # confirms the whole path works: DNS -> Caddy -> TLS -> app.
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${{ secrets.APP_URL }}/healthz" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "public health check OK"
+              exit 0
+            fi
+            echo "attempt $i: HTTP $code, retrying"
+            sleep 6
+          done
+          echo "::error::public health check never returned 200"
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`${{ needs.build.outputs.image }}\` |"
+            echo "| Commit | ${{ github.sha }} |"
+            echo "| Result | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

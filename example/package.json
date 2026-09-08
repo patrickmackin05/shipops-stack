@@ -1,0 +1,26 @@
+{
+  "name": "linkjar",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tiny link-saving app used to exercise the stack end to end",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node src/migrate.js",
+    "lint": "node --check src/server.js && node --check src/db.js && node --check src/migrate.js",
+    "format:check": "prettier --check src public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "redis": "^4.7.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3"
+  }
+}

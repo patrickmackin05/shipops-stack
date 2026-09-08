@@ -1,0 +1,28 @@
+# Local / staging Caddyfile - plain HTTP on :80, no ACME.
+#
+# Use this to rehearse a deployment on your own machine before touching a
+# client's server: `CADDYFILE=./Caddyfile.local HTTP_PORT=8080 docker compose up`.
+# Identical proxy and blue/green behaviour to the production Caddyfile, minus
+# TLS - so you are not burning Let's Encrypt rate limits while testing.
+
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	encode zstd gzip
+
+	reverse_proxy app_blue:3000 app_green:3000 {
+		lb_policy       round_robin
+		lb_retries      2
+		lb_try_duration 5s
+
+		health_uri      /healthz
+		health_interval 3s
+		health_timeout  2s
+		fail_duration   10s
+
+		header_up X-Real-IP {remote_host}
+	}
+}

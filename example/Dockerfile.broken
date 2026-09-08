@@ -1,0 +1,4 @@
+# Deliberately broken build: starts, listens, but fails its healthcheck.
+# Used to prove deploy.sh rolls back instead of taking the site down.
+FROM linkjar:v1
+CMD ["node","-e","require('http').createServer((q,s)=>{s.writeHead(500);s.end('broken')}).listen(3000,'0.0.0.0');console.log('broken build listening')"]

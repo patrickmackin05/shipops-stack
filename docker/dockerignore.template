@@ -1,0 +1,34 @@
+# Copy to the client repo root as `.dockerignore`.
+# Everything here stays out of the build context. This is a security control as
+# much as a speed one: .env and .git are the two things you most want to never
+# accidentally bake into a layer that gets pushed to a registry.
+
+.git
+.github
+.gitignore
+node_modules
+npm-debug.log*
+.next
+dist
+build
+coverage
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+.DS_Store
+Thumbs.db
+*.md
+!README.md
+.vscode
+.idea
+docker-compose*.yml
+Dockerfile*

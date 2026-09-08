@@ -1,0 +1,133 @@
+# ShipOps standard production stack.
+#
+# Design decisions worth knowing before you edit this file:
+#
+#  * Caddy terminates TLS and is the ONLY container with published ports.
+#    Postgres and Redis are reachable only on the internal Docker network -
+#    never publish 5432. A Postgres exposed to the internet with a weak
+#    password is found by scanners within hours.
+#
+#  * The app runs as two services, app_blue and app_green, with only one alive
+#    at a time under normal operation. scripts/deploy.sh starts the idle colour
+#    on the new image, waits for it to pass its healthcheck, then stops the old
+#    one. Caddy health-checks both upstreams, so traffic follows whichever is
+#    up. That is what makes deploys zero-downtime and rollback instant.
+#
+#  * Every service has a log rotation policy. Without it, a chatty app fills
+#    the disk in a few weeks and takes the database down with it. This is the
+#    single most common cause of "the server just died" on small VPSes.
+#
+#  * Postgres and Redis data live in named volumes, not bind mounts, so they
+#    survive `docker compose down` and are backed up by scripts/backup.sh.
+
+name: ${STACK_NAME:-shipops}
+
+x-app-common: &app-common
+  image: ${APP_IMAGE:?APP_IMAGE must be set - see .env}
+  restart: unless-stopped
+  env_file: [.env]
+  environment:
+    DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    REDIS_URL: redis://redis:6379
+    NODE_ENV: production
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis:    {condition: service_healthy}
+  networks: [internal]
+  logging: &logging
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+  deploy:
+    resources:
+      limits:
+        memory: ${APP_MEMORY_LIMIT:-512M}
+  security_opt: [no-new-privileges:true]
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"   # HTTP/3
+    volumes:
+      - ${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # ACME account + certificates. Losing this means
+      - caddy_config:/config    # re-issuing certs and risking LE rate limits.
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN must be set}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL must be set}
+    networks: [internal]
+    logging: *logging
+    # Deliberately NO depends_on. Caddy must not be tied to a specific app
+    # colour: `compose up caddy` would then also recreate that colour, which
+    # during a deploy restarts the container currently serving traffic. Caddy
+    # starts fine with no healthy upstream and picks one up within
+    # health_interval.
+
+  app_blue:
+    <<: *app-common
+    container_name: ${STACK_NAME:-shipops}_app_blue
+
+  app_green:
+    <<: *app-common
+    container_name: ${STACK_NAME:-shipops}_app_green
+    # Not started by `docker compose up`; deploy.sh brings it up explicitly.
+    profiles: [green]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
+      # Slightly stricter than the default md5 auth.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [internal]
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEMORY_LIMIT:-512M}
+    security_opt: [no-new-privileges:true]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly gives durability across restarts; maxmemory-policy stops Redis
+    # from being OOM-killed and taking the whole box's memory pressure with it.
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory ${REDIS_MAXMEMORY:-128mb}
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [internal]
+    logging: *logging
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge

@@ -1,0 +1,96 @@
+# Alternative database services for docker-compose.prod.yml.
+#
+# The default stack runs Postgres. To use MySQL or MongoDB instead, REPLACE the
+# `postgres:` service in docker-compose.prod.yml with one of the blocks below,
+# update the app's DATABASE_URL in the x-app-common anchor, and set the matching
+# variables in .env.
+#
+# This file is a reference to copy from, not a compose overlay you can layer on
+# with `-f`: compose can merge services but cannot remove one, so leaving the
+# Postgres service in place would just start a second, unused database.
+#
+# backup.sh and restore-test.sh detect the engine from the running container
+# name, so no script changes are needed. Set DB_ENGINE in .env to be explicit.
+
+services:
+
+  # ── MySQL ────────────────────────────────────────────────────────────────
+  # Container name becomes <stack>-mysql-1, which is what the scripts look for.
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE must be set}
+      MYSQL_USER: ${MYSQL_USER:?MYSQL_USER must be set}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be set}
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL:-256M}
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      # mysqladmin ping answers before the server has finished its first-boot
+      # restart, so run a real query instead.
+      test: ["CMD-SHELL", "mysql -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} -e 'SELECT 1' $${MYSQL_DATABASE}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    networks: [internal]
+    # Written out rather than using the *logging alias from
+    # docker-compose.prod.yml, so this file is valid on its own. Once pasted in
+    # you can swap it back to `logging: *logging` if you prefer.
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    deploy:
+      resources:
+        limits:
+          memory: ${MYSQL_MEMORY_LIMIT:-768M}
+    security_opt: [no-new-privileges:true]
+
+  # ── MongoDB ──────────────────────────────────────────────────────────────
+  # Container name becomes <stack>-mongodb-1.
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?must be set}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?must be set}
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE:?MONGO_DATABASE must be set}
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet -u $${MONGO_INITDB_ROOT_USERNAME} -p $${MONGO_INITDB_ROOT_PASSWORD} --authenticationDatabase admin --eval 'db.adminCommand({ping:1}).ok' | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [internal]
+    # Written out rather than using the *logging alias from
+    # docker-compose.prod.yml, so this file is valid on its own. Once pasted in
+    # you can swap it back to `logging: *logging` if you prefer.
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    deploy:
+      resources:
+        limits:
+          memory: ${MONGO_MEMORY_LIMIT:-768M}
+    security_opt: [no-new-privileges:true]
+
+# Add the matching volume to the top-level `volumes:` block and delete `pgdata`:
+volumes:
+  mysqldata:
+  mongodata:
+
+# ── App connection strings ──────────────────────────────────────────────────
+# Replace the DATABASE_URL line in the x-app-common anchor:
+#
+#   Postgres  postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+#   MySQL     mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+#   MongoDB   mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongodb:27017/${MONGO_DATABASE}?authSource=admin
+#
+# And update the depends_on in that anchor to name the service you kept.

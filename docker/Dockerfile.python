@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1.7
+# ShipOps standard Python production image (FastAPI / Django / Flask).
+#
+# Per-client edits:
+#   - PYTHON_VERSION
+#   - the dependency install block (uv / poetry / plain pip - pick one)
+#   - the CMD (uvicorn for FastAPI, gunicorn for Django/Flask)
+
+ARG PYTHON_VERSION=3.12
+
+# --- build ----------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim-bookworm AS build
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Build-only toolchain. These are what make a naive Python image enormous;
+# keeping them in the build stage means psycopg2/cryptography compile here and
+# the compiler never ships to production.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential libpq-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install into a virtualenv we can copy wholesale into the runtime stage.
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+# Poetry alternative - replace the two lines above with:
+#   COPY pyproject.toml poetry.lock ./
+#   RUN pip install poetry && poetry export -f requirements.txt --without-hashes -o r.txt && pip install -r r.txt
+
+# --- runtime --------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+# libpq5 is the runtime half of libpq-dev; curl is for the healthcheck.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tini curl libpq5 ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --uid 1000 --shell /usr/sbin/nologin app
+
+COPY --from=build /opt/venv /opt/venv
+
+WORKDIR /app
+COPY --chown=app:app . .
+
+USER app
+EXPOSE 8000
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+# FastAPI:
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Django:
+# CMD ["gunicorn", "project.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]

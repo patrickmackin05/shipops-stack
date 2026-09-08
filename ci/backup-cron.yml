@@ -1,0 +1,50 @@
+# Optional: run the nightly backup and the weekly restore test from GitHub
+# Actions instead of host cron.
+#
+# Trade-off worth understanding before choosing this over host cron:
+#   + Failures are visible in a UI you already check, with logs and history.
+#   + It keeps working if the host's cron is wiped by a rebuild.
+#   - It needs the deploy SSH key to be usable for backup operations too.
+#   - GitHub's scheduled runners are best-effort and can be delayed by 10-30
+#     minutes under load. Fine for nightly backups, not for anything tighter.
+#
+# Host cron (see RUNBOOK) is the default; use this when the client wants the
+# audit trail.
+
+name: backup
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # 03:17 UTC nightly - off the hour, when the shared
+                           # runner pool is less contended
+    - cron: '42 4 * * 0'   # Sunday: restore verification
+  workflow_dispatch:
+    inputs:
+      restore_test:
+        description: 'Also run the restore test'
+        type: boolean
+        default: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${{ secrets.SSH_PORT || 22 }}" -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run backup
+        run: |
+          ssh -p "${{ secrets.SSH_PORT || 22 }}" \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "/opt/shipops/scripts/backup.sh"
+
+      - name: Run restore verification
+        if: github.event.schedule == '42 4 * * 0' || inputs.restore_test
+        run: |
+          ssh -p "${{ secrets.SSH_PORT || 22 }}" \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "/opt/shipops/scripts/restore-test.sh"

@@ -1,0 +1,19 @@
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Backup artefacts
+*.dump
+*.dump.sha256
+*.sql.gz
+*.archive.gz
+
+# Runtime state
+deploy-history.tsv
+node_modules/
+.DS_Store
