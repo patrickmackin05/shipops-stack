@@ -188,6 +188,23 @@ Stated plainly, because a stack like this is easy to oversell:
 
 If you need those, you need more than a single VPS and this is the wrong tool.
 
+## Further reading
+
+Write-ups of things this stack exists because of — several found while testing it:
+
+- [You built an app with AI. Now it has to run somewhere.](https://shipops.dev/writing/built-with-ai-now-deploy-it)
+  — what deploying actually involves if your app currently only runs on your
+  laptop, whether you need a server at all, and the seven assumptions in
+  AI-written code that stop being true in production.
+- [The backup that restores perfectly and contains nothing](https://shipops.dev/writing/backup-that-restores-perfectly-and-contains-nothing)
+  — why `mongorestore --dryRun` exits 0 on a truncated archive, and the check
+  that actually catches an empty backup.
+- [Docker quietly bypasses UFW](https://shipops.dev/writing/docker-bypasses-ufw)
+  — published container ports are reachable regardless of firewall rules,
+  because they traverse FORWARD rather than INPUT.
+- [pg_restore: unsupported version in file header](https://shipops.dev/writing/pg-restore-unsupported-version-in-file-header)
+  — client/server version skew, not a corrupt backup.
+
 ## Licence
 
 MIT. Use it, fork it, ship it.
