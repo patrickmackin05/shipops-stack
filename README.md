@@ -58,7 +58,7 @@ Both claims come with the harnesses that test them, in `test/`.
 Runs the whole stack locally against the example app in about a minute.
 
 ```bash
-git clone https://github.com/YOURNAME/shipops-stack
+git clone https://github.com/patrickmackin05/shipops-stack
 cd shipops-stack/example
 docker build --build-arg APP_VERSION=v1 -t linkjar:v1 .
 
